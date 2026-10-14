@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>שעון השמיים</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@200;300;500;700&display=swap" rel="stylesheet">
+<style>
+  :root { --glass: rgba(10, 16, 32, 0.38); --line: rgba(255,255,255,0.16); }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #02040e; color: #fff;
+    font-family: Heebo, system-ui, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .clock { position: fixed; top: 50%; left: 0; right: 0; transform: translateY(-50%); text-align: center; pointer-events: none;
+    text-shadow: 0 2px 18px rgba(0,0,0,0.35); }
+  .time { direction: ltr; font-weight: 200; font-size: clamp(56px, 13vw, 150px); line-height: 1;
+    letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+  .time .sec { font-size: 0.42em; opacity: 0.75; margin-inline-start: 0.12em; }
+  .date { margin-top: 8px; font-size: clamp(15px, 2.2vw, 22px); font-weight: 300; opacity: 0.92; }
+  .hdate { font-size: clamp(13px, 1.8vw, 18px); opacity: 0.75; margin-top: 2px; }
+
+  .controls { position: fixed; top: 14px; inset-inline-start: 14px; display: flex; gap: 6px; flex-wrap: wrap;
+    z-index: 2; }
+  .controls select, .controls button { font: inherit; font-size: 14px; color: #fff; background: var(--glass);
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px); cursor: pointer; }
+  .controls button.on { background: rgba(255,255,255,0.22); }
+  .controls select option { color: #000; }
+
+  .info { position: fixed; bottom: 16px; left: 16px; right: 16px; display: flex; gap: 12px;
+    justify-content: center; flex-wrap: wrap; }
+  .card { background: var(--glass); border: 1px solid var(--line); border-radius: 16px; padding: 10px 16px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); min-width: 230px; font-size: 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+  .card .row { display: flex; justify-content: space-between; gap: 16px; opacity: 0.9; line-height: 1.6; }
+  .card .row b { font-weight: 500; font-variant-numeric: tabular-nums; }
+  .note { position: fixed; bottom: 2px; left: 0; right: 0; text-align: center; font-size: 11px; opacity: 0.45;
+    pointer-events: none; }
+
+  @media (max-width: 600px) {
+    .card { min-width: 0; flex: 1 1 140px; padding: 8px 12px; font-size: 12px; }
+    .card .row { gap: 8px; }
+    .controls { inset-inline-start: 8px; top: 8px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+
+<div class="controls">
+  <button data-speed="1" class="on">עכשיו</button>
+  <button data-speed="120">×120</button>
+  <button data-speed="1200">×1200</button>
+</div>
+
+<div class="clock">
+  <div class="time" id="time">--:--<span class="sec">--</span></div>
+  <div class="date" id="date"></div>
+  <div class="hdate" id="hdate"></div>
+  <div class="hdate">תל אביב</div>
+</div>
+
+<div class="info">
+  <div class="card">
+    <h3>☀️ השמש</h3>
+    <div class="row"><span>גובה מעל האופק</span><b id="sAlt"></b></div>
+    <div class="row"><span>כיוון (אזימוט)</span><b id="sAz"></b></div>
+    <div class="row"><span>קוטר נראה</span><b id="sSize"></b></div>
+    <div class="row"><span>זריחה · שקיעה</span><b id="sRise"></b></div>
+  </div>
+  <div class="card">
+    <h3>🌙 הירח</h3>
+    <div class="row"><span>גובה מעל האופק</span><b id="mAlt"></b></div>
+    <div class="row"><span>כיוון (אזימוט)</span><b id="mAz"></b></div>
+    <div class="row"><span>קוטר נראה · מרחק</span><b id="mSize"></b></div>
+    <div class="row"><span>מופע</span><b id="mPhase"></b></div>
+    <div class="row"><span>זריחה · שקיעה</span><b id="mRise"></b></div>
+  </div>
+</div>
+<div class="note">גודל השמש והירח מוגדל, אך היחס ביניהם אמיתי</div>
+
+<script>
+// ---------- Astronomy (based on the SunCalc algorithms) ----------
+const PI = Math.PI, rad = PI / 180, dayMs = 86400000, J1970 = 2440588, J2000 = 2451545;
+const e = rad * 23.4397;
+const toDays = t => t / dayMs - 0.5 + J1970 - J2000;
+const rightAscension = (l, b) => Math.atan2(Math.sin(l) * Math.cos(e) - Math.tan(b) * Math.sin(e), Math.cos(l));
+const declination = (l, b) => Math.asin(Math.sin(b) * Math.cos(e) + Math.cos(b) * Math.sin(e) * Math.sin(l));
+const azimuth = (H, phi, dec) => Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(phi) - Math.tan(dec) * Math.cos(phi));
+const altitude = (H, phi, dec) => Math.asin(Math.sin(phi) * Math.sin(dec) + Math.cos(phi) * Math.cos(dec) * Math.cos(H));
+const siderealTime = (d, lw) => rad * (280.16 + 360.9856235 * d) - lw;
+const solarMeanAnomaly = d => rad * (357.5291 + 0.98560028 * d);
+function eclipticLongitude(M) {
+  const C = rad * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M));
+  return M + C + rad * 102.9372 + PI;
+}
+function sunCoords(d) {
+  const M = solarMeanAnomaly(d), L = eclipticLongitude(M);
+  const au = 1.00014 - 0.01671 * Math.cos(M) - 0.00014 * Math.cos(2 * M);
+  return { dec: declination(L, 0), ra: rightAscension(L, 0), dist: au * 149597870.7 };
+}
+function moonCoords(d) {
+  const L = rad * (218.316 + 13.176396 * d), M = rad * (134.963 + 13.064993 * d), F = rad * (93.272 + 13.229350 * d);
+  const l = L + rad * 6.289 * Math.sin(M), b = rad * 5.128 * Math.sin(F);
+  return { ra: rightAscension(l, b), dec: declination(l, b), dist: 385001 - 20905 * Math.cos(M) };
+}
+function refraction(h) {
+  if (h < 0) h = 0;
+  return 0.0002967 / Math.tan(h + 0.00312536 / (h + 0.08901179));
+}
+// azimuth returned as compass degrees (0 = north, 90 = east), altitude in degrees
+function sunPosition(t, lat, lng) {
+  const lw = rad * -lng, phi = rad * lat, d = toDays(t), c = sunCoords(d);
+  const H = siderealTime(d, lw) - c.ra;
+  return { az: (azimuth(H, phi, c.dec) / rad + 180) % 360, alt: altitude(H, phi, c.dec) / rad, dist: c.dist };
+}
+function moonPosition(t, lat, lng) {
+  const lw = rad * -lng, phi = rad * lat, d = toDays(t), c = moonCoords(d);
+  const H = siderealTime(d, lw) - c.ra;
+  let h = altitude(H, phi, c.dec);
+  h += refraction(h);
+  return { az: (azimuth(H, phi, c.dec) / rad + 180) % 360, alt: h / rad, dist: c.dist };
+}
+function moonIllumination(t) {
+  const d = toDays(t), s = sunCoords(d), m = moonCoords(d), sdist = 149598000;
+  const phi = Math.acos(Math.sin(s.dec) * Math.sin(m.dec) + Math.cos(s.dec) * Math.cos(m.dec) * Math.cos(s.ra - m.ra));
+  const inc = Math.atan2(sdist * Math.sin(phi), m.dist - sdist * Math.cos(phi));
+  const angle = Math.atan2(Math.cos(s.dec) * Math.sin(s.ra - m.ra),
+    Math.sin(s.dec) * Math.cos(m.dec) - Math.cos(s.dec) * Math.sin(m.dec) * Math.cos(s.ra - m.ra));
+  return { fraction: (1 + Math.cos(inc)) / 2, phase: 0.5 + 0.5 * inc * (angle < 0 ? -1 : 1) / PI };
+}
+const angDiam = (radiusKm, distKm) => 2 * Math.atan(radiusKm / distKm) / rad; // degrees
+
+// ---------- Israel time helpers ----------
+const TZ = 'Asia/Jerusalem';
+const fmtHMS = new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+const fmtHM = new Intl.DateTimeFormat('he-IL', { timeZone: TZ, hour: '2-digit', minute: '2-digit', hour12: false });
+const fmtDate = new Intl.DateTimeFormat('he-IL', { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const fmtHeb = new Intl.DateTimeFormat('he-IL-u-ca-hebrew', { timeZone: TZ, day: 'numeric', month: 'long', year: 'numeric' });
+const fmtParts = new Intl.DateTimeFormat('en-US', { timeZone: TZ, year: 'numeric', month: 'numeric', day: 'numeric',
+  hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false });
+
+function israelMidnight(t) {
+  const p = Object.fromEntries(fmtParts.formatToParts(new Date(t)).map(x => [x.type, +x.value]));
+  const asUTC = Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second);
+  const offset = asUTC - Math.floor(t / 1000) * 1000;
+  return Date.UTC(p.year, p.month - 1, p.day) - offset;
+}
+// rise/set within the Israeli calendar day containing t
+function riseSet(posFn, t, lat, lng, h0) {
+  const start = israelMidnight(t), step = 2 * 60000;
+  let rise = null, set = null, prev = posFn(start, lat, lng).alt - h0;
+  for (let k = step; k <= dayMs; k += step) {
+    const cur = posFn(start + k, lat, lng).alt - h0;
+    const tc = start + k - step * cur / (cur - prev);
+    if (prev < 0 && cur >= 0 && rise === null) rise = tc;
+    if (prev >= 0 && cur < 0 && set === null) set = tc;
+    prev = cur;
+  }
+  return { rise, set };
+}
+const hm = t => t === null ? '—' : fmtHM.format(new Date(t));
+
+function phaseName(p) {
+  if (p < 0.02 || p > 0.98) return 'ירח חדש (מולד)';
+  if (p < 0.23) return 'סהר מתמלא';
+  if (p < 0.27) return 'רבע ראשון';
+  if (p < 0.48) return 'ירח מתמלא';
+  if (p < 0.52) return 'ירח מלא';
+  if (p < 0.73) return 'ירח מתמעט';
+  if (p < 0.77) return 'רבע אחרון';
+  return 'סהר מתמעט';
+}
+const compassName = az => ['צפון', 'צפון-מזרח', 'מזרח', 'דרום-מזרח', 'דרום', 'דרום-מערב', 'מערב', 'צפון-מערב'][Math.round(az / 45) % 8];
+
+// ---------- State ----------
+const lat = 32.0853, lng = 34.7818; // תל אביב
+let speed = 1, anchorReal = Date.now(), anchorSim = Date.now();
+const simNow = () => anchorSim + (Date.now() - anchorReal) * speed;
+
+document.querySelectorAll('[data-speed]').forEach(b => b.onclick = () => {
+  const s = +b.dataset.speed;
+  anchorSim = s === 1 ? Date.now() : simNow();
+  anchorReal = Date.now(); speed = s; lastRS = 0;
+  document.querySelectorAll('[data-speed]').forEach(x => x.classList.toggle('on', x === b));
+});
+
+// ---------- Canvas & scenery ----------
+const cv = document.getElementById('sky'), ctx = cv.getContext('2d');
+let W, H, dpr, horizonY, skyline = null;
+const stars = Array.from({ length: 320 }, () => ({ x: Math.random(), y: Math.random(), r: Math.random() * 1.3 + 0.3,
+  a: Math.random() * 0.7 + 0.3, tw: Math.random() * PI * 2 }));
+const maria = [[-0.25, -0.3, 0.28], [0.15, -0.35, 0.2], [0.3, 0.05, 0.22], [-0.1, 0.15, 0.25], [-0.35, 0.3, 0.15], [0.1, 0.45, 0.12]];
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  horizonY = H * 0.74;
+  skyline = null;
+}
+addEventListener('resize', resize); resize();
+
+const lerp = (a, b, k) => a + (b - a) * k;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const hex = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const mix = (c1, c2, k) => `rgb(${c1.map((v, i) => Math.round(lerp(v, c2[i], k))).join(',')})`;
+
+// sky colour keyframes by sun altitude: [alt, top, middle, horizon]
+const SKY = [
+  [-90, '#01020a', '#030616', '#060a22'],
+  [-18, '#01020a', '#050a24', '#0b1232'],
+  [-10, '#05092a', '#1a1f4f', '#3b2e5e'],
+  [-4,  '#0e1a4a', '#3d3f78', '#d0674a'],
+  [0,   '#1d3170', '#5d6aa8', '#f2955a'],
+  [6,   '#2a5ba8', '#7aa6d9', '#f6c48a'],
+  [15,  '#2b6bc4', '#6fb0ea', '#bfe0f6'],
+  [90,  '#1757b8', '#4d9ae6', '#a8d6f7'],
+].map(k => [k[0], hex(k[1]), hex(k[2]), hex(k[3])]);
+function skyColors(alt) {
+  let i = 0;
+  while (i < SKY.length - 2 && alt > SKY[i + 1][0]) i++;
+  const a = SKY[i], b = SKY[i + 1], k = clamp((alt - a[0]) / (b[0] - a[0]), 0, 1);
+  return [1, 2, 3].map(j => mix(a[j], b[j], k));
+}
+
+// panorama projection: compass azimuth -> x (north at edges, south in the middle), altitude -> y
+const projX = az => (az / 360) * W;
+const projY = alt => horizonY - (alt / 90) * (horizonY - 30);
+const pxPerDeg = () => Math.min(W, H) * 0.085; // exaggerated, same scale for sun & moon
+
+// ---------- Tel Aviv skyline ----------
+function rng(seed) {
+  return () => {
+    seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+// landmark towers: position (fraction of width), height & width in metres, roof shape
+const LANDMARKS = [
+  { x: 0.24, h: 244, w: 46, roof: 'spire' },  // מגדל משה אביב
+  { x: 0.33, h: 196, w: 40, roof: 'flat' },   // מידטאון
+  { x: 0.40, h: 238, w: 56, roof: 'notch' },  // מגדל עזריאלי שרונה
+  { x: 0.46, h: 187, w: 50, roof: 'round' },  // עזריאלי העגול
+  { x: 0.505, h: 169, w: 46, roof: 'slant' }, // עזריאלי המשולש
+  { x: 0.55, h: 154, w: 46, roof: 'flat' },   // עזריאלי המרובע
+  { x: 0.62, h: 111, w: 64, roof: 'toha' },   // טוהא
+  { x: 0.68, h: 155, w: 40, roof: 'flat' },   // מגדל אלקטרה
+  { x: 0.75, h: 142, w: 48, roof: 'flat' },   // מגדל שלום
+];
+function windowsFor(R, x, top, w, h, density) {
+  const out = [];
+  for (let wy = top + 6; wy < h + top - 4; wy += 7)
+    for (let wx = x + 3; wx < x + w - 4; wx += 6)
+      if (R() < density) out.push(wx, wy);
+  return out;
+}
+
+function buildSkyline() {
+  const R = rng(20260514), k = H * 0.36 / 250; // px per metre
+  const far = [], towers = [], near = [], palms = [];
+  for (let x = -10; x < W + 10;) { // hazy far city, tops just around the horizon
+    const w = 14 + R() * 40;
+    far.push({ x, w, top: horizonY - R() * H * 0.035 });
+    x += w * (0.7 + R() * 0.3);
+  }
+  for (let i = 0; i < 26; i++) { // generic residential/office towers
+    const h = (55 + R() * 85) * k, w = (22 + R() * 22) * k, x = W * (0.08 + R() * 0.84) - w / 2;
+    towers.push({ x, w, top: H - h, roof: 'flat', win: windowsFor(R, x, H - h, w, h, 0.28) });
+  }
+  for (const L of LANDMARKS) {
+    const h = L.h * k, w = L.w * k, x = W * L.x - w / 2;
+    towers.push({ x, w, top: H - h, roof: L.roof, landmark: true, win: windowsFor(R, x, H - h, w, h, 0.35) });
+  }
+  for (let x = -5; x < W + 5;) { // low Bauhaus blocks in front
+    const w = 18 + R() * 36, h = (12 + R() * 22) * k;
+    near.push({ x, w, top: H - h, win: windowsFor(R, x, H - h, w, h, 0.4) });
+    x += w + R() * 4;
+  }
+  for (let i = 0; i < 7; i++) palms.push({ x: W * (0.8 + R() * 0.18), h: H * (0.09 + R() * 0.06), lean: (R() - 0.5) * 0.5 });
+  skyline = { far, towers, near, palms, k };
+}
+
+function towerPath(b, k) {
+  const l = b.x, r = b.x + b.w, t = b.top, w = b.w, h = H - t;
+  ctx.beginPath();
+  switch (b.roof) {
+    case 'spire':
+      ctx.rect(l, t, w, h);
+      ctx.rect(l + w * 0.48, t - 30 * k, Math.max(1.5, w * 0.04), 30 * k);
+      break;
+    case 'notch':
+      ctx.moveTo(l, H); ctx.lineTo(l, t + 14 * k); ctx.lineTo(l + w * 0.3, t + 14 * k);
+      ctx.lineTo(l + w * 0.3, t); ctx.lineTo(r - w * 0.08, t); ctx.lineTo(r, t + 6 * k); ctx.lineTo(r, H);
+      break;
+    case 'round':
+      ctx.rect(l, t, w, h);
+      ctx.rect(l + w * 0.2, t - 5 * k, w * 0.6, 5 * k);
+      break;
+    case 'slant':
+      ctx.moveTo(l, H); ctx.lineTo(l, t + 16 * k); ctx.lineTo(r, t); ctx.lineTo(r, H);
+      break;
+    case 'toha':
+      ctx.moveTo(l, H); ctx.lineTo(l, t + h * 0.55); ctx.lineTo(l + w * 0.18, t + h * 0.5);
+      ctx.lineTo(l + w * 0.08, t + h * 0.12); ctx.lineTo(l + w * 0.55, t); ctx.lineTo(r, t + h * 0.22);
+      ctx.lineTo(r - w * 0.12, t + h * 0.6); ctx.lineTo(r, t + h * 0.66); ctx.lineTo(r, H);
+      break;
+    default:
+      ctx.rect(l, t, w, h);
+  }
+}
+
+function drawPalm(p, color) {
+  const bx = p.x, by = H, tx = bx + p.lean * p.h, ty = H - p.h;
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(2, p.h * 0.035);
+  ctx.beginPath(); ctx.moveTo(bx, by); ctx.quadraticCurveTo(bx, ty + p.h * 0.3, tx, ty); ctx.stroke();
+  const fl = p.h * 0.32;
+  for (let i = 0; i < 7; i++) {
+    const a = -PI / 2 + (i - 3) * 0.48, ex = tx + Math.cos(a) * fl, ey = ty + Math.sin(a) * fl * 0.6 + fl * 0.35;
+    ctx.beginPath(); ctx.moveTo(tx, ty);
+    ctx.quadraticCurveTo(tx + Math.cos(a) * fl * 0.6, ty + Math.sin(a) * fl * 0.6 - fl * 0.15, ex, ey);
+    ctx.quadraticCurveTo(tx + Math.cos(a) * fl * 0.55, ty + Math.sin(a) * fl * 0.5, tx, ty + 2);
+    ctx.fill();
+  }
+}
+
+function drawWindows(win, a) {
+  if (a <= 0.02) return;
+  ctx.fillStyle = `rgba(255,214,140,${a})`;
+  for (let i = 0; i < win.length; i += 2) ctx.fillRect(win[i], win[i + 1], 2, 3);
+}
+
+function drawSkyline(light, horizonColor) {
+  if (!skyline) buildSkyline();
+  const { far, towers, near, palms, k } = skyline, night = 1 - light;
+  // far haze layer blends into the horizon colour
+  ctx.fillStyle = mix(hex('#0d1328'), hex('#9fb0c2'), light);
+  ctx.globalAlpha = 0.9;
+  for (const b of far) ctx.fillRect(b.x, b.top, b.w, H - b.top);
+  ctx.globalAlpha = 1;
+  // towers
+  for (const b of towers) {
+    const g = ctx.createLinearGradient(b.x, 0, b.x + b.w, 0);
+    const c1 = b.landmark ? ['#0b1122', '#8aa3bf'] : ['#090d1a', '#7889a0'];
+    const c2 = b.landmark ? ['#060912', '#536a85'] : ['#05070f', '#56657a'];
+    g.addColorStop(0, mix(hex(c1[0]), hex(c1[1]), light));
+    g.addColorStop(b.roof === 'round' ? 0.5 : 1, mix(hex(c2[0]), hex(c2[1]), light));
+    if (b.roof === 'round') g.addColorStop(1, mix(hex(c2[0]), hex('#3f526a'), light));
+    ctx.fillStyle = g;
+    towerPath(b, k); ctx.fill();
+    drawWindows(b.win, night * 0.85);
+  }
+  // red aviation lights on the tallest towers
+  if (night > 0.3 && Math.sin(performance.now() / 400) > 0) {
+    ctx.fillStyle = `rgba(255,40,40,${night})`;
+    for (const b of towers) if (b.landmark && H - b.top > 150 * k) {
+      ctx.beginPath(); ctx.arc(b.x + b.w / 2, b.roof === 'spire' ? b.top - 30 * k : b.top - 2, 2.2, 0, PI * 2); ctx.fill();
+    }
+  }
+  // near low buildings
+  for (const b of near) {
+    ctx.fillStyle = mix(hex('#04060c'), hex('#b9b4a8'), light);
+    ctx.fillRect(b.x, b.top, b.w, H - b.top);
+    drawWindows(b.win, night * 0.9);
+  }
+  const palmColor = mix(hex('#020308'), hex('#2f4a2c'), light);
+  for (const p of palms) drawPalm(p, palmColor);
+}
+
+function drawSun(sun, light) {
+  const x = projX(sun.az), y = projY(sun.alt);
+  const r = angDiam(695700, sun.dist) * pxPerDeg() / 2;
+  const low = clamp(1 - sun.alt / 15, 0, 1); // reddening near the horizon
+  if (sun.alt > -12) {
+    const ga = clamp((sun.alt + 12) / 12, 0, 1);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 14);
+    g.addColorStop(0, `rgba(255,${Math.round(lerp(240, 150, low))},${Math.round(lerp(200, 80, low))},${0.55 * ga})`);
+    g.addColorStop(1, 'rgba(255,160,80,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  if (sun.alt < -1) return;
+  ctx.shadowColor = `rgba(255,${Math.round(lerp(230, 140, low))},120,0.9)`;
+  ctx.shadowBlur = r * 2.5;
+  const g2 = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g2.addColorStop(0, '#fffef5');
+  g2.addColorStop(1, `rgb(255,${Math.round(lerp(236, 150, low))},${Math.round(lerp(160, 60, low))})`);
+  ctx.fillStyle = g2;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+function drawMoon(moon, sun, illum, light) {
+  if (moon.alt < -1) return;
+  const x = projX(moon.az), y = projY(moon.alt);
+  const r = angDiam(1737.4, moon.dist) * pxPerDeg() / 2;
+  // direction toward the sun on screen (shortest way around the panorama)
+  let dx = projX(sun.az) - x; if (dx > W / 2) dx -= W; if (dx < -W / 2) dx += W;
+  const ang = Math.atan2(projY(sun.alt) - y, dx);
+  const f = illum.fraction, night = 1 - light;
+
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(ang);
+  // glow
+  const g = ctx.createRadialGradient(0, 0, r, 0, 0, r * 5);
+  g.addColorStop(0, `rgba(220,230,255,${0.22 * f * night})`); g.addColorStop(1, 'rgba(220,230,255,0)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r * 5, 0, PI * 2); ctx.fill();
+  // unlit disc (earthshine at night, nearly invisible by day)
+  ctx.fillStyle = `rgba(40,48,70,${lerp(0.08, 0.85, night)})`;
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, PI * 2); ctx.fill();
+  // lit part: half disc facing the sun + terminator ellipse
+  ctx.beginPath();
+  ctx.arc(0, 0, r, -PI / 2, PI / 2, false);
+  const rx = r * Math.abs(1 - 2 * f);
+  if (f < 0.5) ctx.ellipse(0, 0, rx, r, 0, PI / 2, -PI / 2, true);
+  else ctx.ellipse(0, 0, rx, r, 0, PI / 2, PI * 1.5, false);
+  ctx.closePath();
+  ctx.fillStyle = `rgba(245,242,228,${lerp(0.75, 1, night)})`;
+  ctx.fill();
+  ctx.clip();
+  ctx.rotate(-ang); // maria fixed to the face
+  ctx.fillStyle = 'rgba(150,150,140,0.35)';
+  for (const [mx, my, mr] of maria) { ctx.beginPath(); ctx.arc(mx * r, my * r, mr * r, 0, PI * 2); ctx.fill(); }
+  ctx.restore();
+}
+
+// ---------- Main loop ----------
+const $ = id => document.getElementById(id);
+let lastRS = 0, lastText = 0;
+
+function frame() {
+  const t = simNow();
+  const sun = sunPosition(t, lat, lng), moon = moonPosition(t, lat, lng), illum = moonIllumination(t);
+  const light = clamp((sun.alt + 8) / 18, 0, 1);
+
+  // sky
+  const [top, mid, bot] = skyColors(sun.alt);
+  const g = ctx.createLinearGradient(0, 0, 0, horizonY);
+  g.addColorStop(0, top); g.addColorStop(0.6, mid); g.addColorStop(1, bot);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  // stars
+  const starA = clamp((-sun.alt - 4) / 12, 0, 1);
+  if (starA > 0) {
+    const now = performance.now() / 1000;
+    for (const s of stars) {
+      const a = s.a * starA * (0.75 + 0.25 * Math.sin(now * 2 + s.tw));
+      ctx.fillStyle = `rgba(255,255,255,${a})`;
+      ctx.beginPath(); ctx.arc(s.x * W, s.y * horizonY, s.r, 0, PI * 2); ctx.fill();
+    }
+  }
+
+  drawMoon(moon, sun, illum, light);
+  drawSun(sun, light);
+  drawSkyline(light, bot);
+
+  // text (throttled)
+  const realNow = Date.now();
+  if (realNow - lastText > 200) {
+    lastText = realNow;
+    const [hh, mm, ss] = fmtHMS.format(new Date(t)).split(':');
+    $('time').innerHTML = `${hh}:${mm}<span class="sec">${ss}</span>`;
+    $('date').textContent = fmtDate.format(new Date(t));
+    $('hdate').textContent = fmtHeb.format(new Date(t));
+
+    $('sAlt').textContent = `${sun.alt.toFixed(1)}°`;
+    $('sAz').textContent = `${sun.az.toFixed(0)}° ${compassName(sun.az)}`;
+    $('sSize').textContent = `${(angDiam(695700, sun.dist) * 60).toFixed(1)}′`;
+    $('mAlt').textContent = `${moon.alt.toFixed(1)}°`;
+    $('mAz').textContent = `${moon.az.toFixed(0)}° ${compassName(moon.az)}`;
+    $('mSize').textContent = `${(angDiam(1737.4, moon.dist) * 60).toFixed(1)}′ · ${Math.round(moon.dist).toLocaleString('he-IL')} ק״מ`;
+    $('mPhase').textContent = `${phaseName(illum.phase)} · ${Math.round(illum.fraction * 100)}%`;
+
+    if (Math.abs(t - lastRS) > 10 * 60000) {
+      lastRS = t;
+      const s = riseSet(sunPosition, t, lat, lng, -0.833);
+      const m = riseSet(moonPosition, t, lat, lng, 0.125);
+      $('sRise').textContent = `${hm(s.rise)} · ${hm(s.set)}`;
+      $('mRise').textContent = `${hm(m.rise)} · ${hm(m.set)}`;
+    }
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
